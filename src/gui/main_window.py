@@ -4,10 +4,12 @@ import numpy as np
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QFileDialog, QSlider, 
                              QSpinBox, QCheckBox, QGroupBox, QProgressBar, QMessageBox,
-                             QTabWidget, QListWidget, QListWidgetItem)
+                             QTabWidget, QListWidget, QListWidgetItem, QRadioButton,
+                             QButtonGroup, QFrame, QComboBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 from gui.workers import StackingWorker, PostProcessingWorker
+from core.processing import FrameAnalyzer
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -73,7 +75,7 @@ class MainWindow(QMainWindow):
         self.stack_percent.setRange(1, 100)
         self.stack_percent.setValue(20)
         self.stack_percent_label = QLabel("20%")
-        self.stack_percent.valueChanged.connect(lambda v: self.stack_percent_label.setText(f"{v}%"))
+        self.stack_percent.valueChanged.connect(self.on_stack_slider_change)
         
         stacking_layout.addWidget(self.stack_percent)
         stacking_layout.addWidget(self.stack_percent_label)
@@ -82,7 +84,41 @@ class MainWindow(QMainWindow):
         self.stack_btn.clicked.connect(self.start_stacking)
         self.stack_btn.setEnabled(False)
         self.stack_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
+        self.stack_btn.stylesheet = "background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;"
         stacking_layout.addWidget(self.stack_btn)
+
+        # --- Advanced Stacking Options ---
+        adv_group = QGroupBox("Advanced Settings")
+        adv_layout = QVBoxLayout(adv_group)
+
+        # Max Frames
+        frame_limit_layout = QHBoxLayout()
+        frame_limit_layout.addWidget(QLabel("Max Frames to Load (0 = All):"))
+        self.max_frames_spin = QSpinBox()
+        self.max_frames_spin.setRange(0, 100000)
+        self.max_frames_spin.setValue(2000) 
+        self.max_frames_spin.setSingleStep(500)
+        frame_limit_layout.addWidget(self.max_frames_spin)
+        adv_layout.addLayout(frame_limit_layout)
+        
+        # Stacking Mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Stacking Mode:"))
+        self.stack_mode_combo = QComboBox() # requires import
+        self.stack_mode_combo.addItems(["Percentage (%)", "Frame Count (#)", "Auto (Best Quality)"])
+        self.stack_mode_combo.currentIndexChanged.connect(self.update_stack_slider_mode)
+        mode_layout.addWidget(self.stack_mode_combo)
+        adv_layout.addLayout(mode_layout)
+
+        # Alignment Mode
+        align_layout = QHBoxLayout()
+        align_layout.addWidget(QLabel("Alignment:"))
+        self.align_mode_combo = QComboBox() 
+        self.align_mode_combo.addItems(["Translation (Fast)", "Affine (Rotation)", "Optical Flow (Distortion)"])
+        align_layout.addWidget(self.align_mode_combo)
+        adv_layout.addLayout(align_layout)
+        
+        stacking_layout.addWidget(adv_group)
         
         control_layout.addWidget(stacking_group)
         
@@ -90,28 +126,64 @@ class MainWindow(QMainWindow):
         postproc_group = QGroupBox("Stage 2: Post-Processing")
         postproc_layout = QVBoxLayout(postproc_group)
         
+        # Mode Selection
+        mode_layout = QHBoxLayout()
+        self.auto_mode_btn = QRadioButton("Automatic")
+        self.manual_mode_btn = QRadioButton("Manual")
+        self.manual_mode_btn.setChecked(True)
+        
+        self.mode_group = QButtonGroup()
+        self.mode_group.addButton(self.auto_mode_btn)
+        self.mode_group.addButton(self.manual_mode_btn)
+        
+        # Connect signal
+        self.mode_group.buttonToggled.connect(self.toggle_postproc_mode)
+        
+        mode_layout.addWidget(self.auto_mode_btn)
+        mode_layout.addWidget(self.manual_mode_btn)
+        postproc_layout.addLayout(mode_layout)
+        
+        # Manual Controls Container
+        self.manual_controls_widget = QWidget()
+        manual_layout = QVBoxLayout(self.manual_controls_widget)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
+        
         # Wavelet Options
-        postproc_layout.addWidget(QLabel("Wavelet Sharpening:"))
+        manual_layout.addWidget(QLabel("Wavelet Sharpening (Dyadic):"))
         self.layer_sliders = []
-        for i in range(1, 7):  # 6 layers like Registax
+        # Dyadic Scales: 1, 2, 4, 8, 16, 32
+        scales = [1, 2, 4, 8, 16, 32]
+        for i, scale in enumerate(scales):
             layer_container = QWidget()
             layer_layout = QVBoxLayout(layer_container)
             layer_layout.setContentsMargins(0, 0, 0, 0)
             
-            layer_layout.addWidget(QLabel(f"  Layer {i} (Sigma {i}.0)"))
+            layer_layout.addWidget(QLabel(f"  Layer {i+1} (Denoise/Detail {scale}px)"))
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(0, 50) # Divide by 10 for actual weight
             slider.setValue(0)
             slider.valueChanged.connect(self.on_postproc_param_changed)
             layer_layout.addWidget(slider)
             
-            postproc_layout.addWidget(layer_container)
+            manual_layout.addWidget(layer_container)
             self.layer_sliders.append(slider)
+            
+        # Denoise Option
+        denoise_container = QHBoxLayout()
+        denoise_container.addWidget(QLabel("Denoise Strength:"))
+        self.denoise_slider = QSlider(Qt.Orientation.Horizontal)
+        self.denoise_slider.setRange(0, 20)
+        self.denoise_slider.setValue(0)
+        self.denoise_slider.valueChanged.connect(self.on_postproc_param_changed)
+        denoise_container.addWidget(self.denoise_slider)
+        manual_layout.addLayout(denoise_container)
         
         # Color Options
         self.auto_color_check = QCheckBox("Auto Color Balance & Align")
         self.auto_color_check.stateChanged.connect(self.on_postproc_param_changed)
-        postproc_layout.addWidget(self.auto_color_check)
+        manual_layout.addWidget(self.auto_color_check)
+        
+        postproc_layout.addWidget(self.manual_controls_widget)
         
         self.apply_postproc_btn = QPushButton("Apply Post-Processing")
         self.apply_postproc_btn.clicked.connect(self.start_post_processing)
@@ -202,6 +274,21 @@ class MainWindow(QMainWindow):
             self.clear_videos_btn.setEnabled(True)
         self.status_label.setText("Ready to stack." if count > 0 else "Load video(s) to begin.")
     
+    def update_stack_slider_mode(self, index):
+        if index == 0: # Percentage
+            self.stack_percent.setRange(1, 100)
+            self.stack_percent.setValue(20)
+            self.stack_percent.setEnabled(True)
+            self.stack_percent_label.setText("20%")
+        elif index == 1: # Frame Count
+            self.stack_percent.setRange(1, 10000)
+            self.stack_percent.setValue(500)
+            self.stack_percent.setEnabled(True)
+            self.stack_percent_label.setText("500 frames")
+        else: # Auto
+            self.stack_percent.setEnabled(False)
+            self.stack_percent_label.setText("Auto-Detect")
+            
     def start_stacking(self):
         if not self.video_paths:
             return
@@ -215,9 +302,23 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 0) # Indeterminate
         
         # Gather stacking settings
-        stack_pct = self.stack_percent.value()
+        stack_val = self.stack_percent.value()
+        max_load = self.max_frames_spin.value()
+        if max_load == 0: max_load = None
         
-        self.stacking_worker = StackingWorker(self.video_paths, stack_pct)
+        idx = self.stack_mode_combo.currentIndex()
+        if idx == 0:
+            stack_mode = "percent"
+        elif idx == 1:
+            stack_mode = "count"
+        else:
+            stack_mode = "auto"
+            
+        align_mode = "translate"
+        if self.align_mode_combo.currentIndex() == 1: align_mode = "affine"
+        elif self.align_mode_combo.currentIndex() == 2: align_mode = "optical_flow"
+        
+        self.stacking_worker = StackingWorker(self.video_paths, stack_val, stack_mode, max_load, align_mode)
         self.stacking_worker.progress.connect(self.update_status)
         self.stacking_worker.finished.connect(self.stacking_finished)
         self.stacking_worker.error.connect(self.processing_error)
@@ -226,7 +327,9 @@ class MainWindow(QMainWindow):
     def stacking_finished(self, stacked_image):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
-        self.status_label.setText("Stacking Complete! Ready for post-processing.")
+        
+        recognized_obj = FrameAnalyzer.recognize_object(stacked_image)
+        self.status_label.setText(f"Stacking Complete! Recognized Object: {recognized_obj}. Ready for post-processing.")
         
         self.stacked_image = stacked_image
         self.display_image(stacked_image, self.stacked_view)
@@ -238,13 +341,22 @@ class MainWindow(QMainWindow):
         self.add_video_btn.setEnabled(True)
         self.clear_videos_btn.setEnabled(True)
         
-        # Switch to stacked tab
         self.preview_tabs.setCurrentIndex(0)
+        
+    def on_stack_slider_change(self, v):
+        if self.stack_mode_combo.currentIndex() == 0:
+            self.stack_percent_label.setText(f"{v}%")
+        else:
+            self.stack_percent_label.setText(f"{v} frames")
     
     def on_postproc_param_changed(self):
         # Auto-apply is disabled; user must click apply button
         pass
     
+    def toggle_postproc_mode(self):
+        is_manual = self.manual_mode_btn.isChecked()
+        self.manual_controls_widget.setVisible(is_manual)
+
     def start_post_processing(self):
         if self.stacked_image is None:
             return
@@ -255,15 +367,25 @@ class MainWindow(QMainWindow):
         
         # Gather post-processing settings
         layers = []
-        for i, slider in enumerate(self.layer_sliders):
-            weight = slider.value() / 10.0
-            sigma = float(i + 1)
-            if weight > 0:
-                layers.append((sigma, weight))
+        auto_color = False
         
-        auto_color = self.auto_color_check.isChecked()
+        if self.auto_mode_btn.isChecked():
+            # Automatic settings - handled by worker's smart optimizer
+            auto_mode = True
+        else:
+            auto_mode = False
+            # Manual settings
+            scales = [1, 2, 4, 8, 16, 32]
+            for i, slider in enumerate(self.layer_sliders):
+                weight = slider.value() / 10.0
+                sigma = float(scales[i])
+                if weight > 0:
+                    layers.append((sigma, weight))
+            
+            auto_color = self.auto_color_check.isChecked()
+            denoise = self.denoise_slider.value()
         
-        self.postproc_worker = PostProcessingWorker(self.stacked_image, layers, auto_color)
+        self.postproc_worker = PostProcessingWorker(self.stacked_image, layers, auto_color, denoise, auto_mode=auto_mode)
         self.postproc_worker.progress.connect(self.update_status)
         self.postproc_worker.finished.connect(self.postproc_finished)
         self.postproc_worker.error.connect(self.processing_error)
