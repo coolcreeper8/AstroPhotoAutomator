@@ -118,6 +118,11 @@ class MainWindow(QMainWindow):
         align_layout.addWidget(self.align_mode_combo)
         adv_layout.addLayout(align_layout)
         
+        # Pano Mode
+        self.pano_mode_check = QCheckBox("Panorama Mode (Stitch videos)")
+        self.pano_mode_check.setToolTip("Stack each video separately and stitch them into a panorama.")
+        adv_layout.addWidget(self.pano_mode_check)
+        
         stacking_layout.addWidget(adv_group)
         
         control_layout.addWidget(stacking_group)
@@ -318,7 +323,9 @@ class MainWindow(QMainWindow):
         if self.align_mode_combo.currentIndex() == 1: align_mode = "affine"
         elif self.align_mode_combo.currentIndex() == 2: align_mode = "optical_flow"
         
-        self.stacking_worker = StackingWorker(self.video_paths, stack_val, stack_mode, max_load, align_mode)
+        pano_mode = self.pano_mode_check.isChecked()
+        
+        self.stacking_worker = StackingWorker(self.video_paths, stack_val, stack_mode, max_load, align_mode, pano_mode)
         self.stacking_worker.progress.connect(self.update_status)
         self.stacking_worker.finished.connect(self.stacking_finished)
         self.stacking_worker.error.connect(self.processing_error)
