@@ -1,4 +1,5 @@
 from PyQt6.QtCore import QThread, pyqtSignal
+import os
 from core.video_loader import VideoLoader
 from core.processing import FrameAnalyzer
 from core.stacking import Stacker
@@ -60,7 +61,7 @@ class StackingWorker(QThread):
             # --- ORIGINAL LOGIC for ALL-IN-ONE Stack ---
             all_frames = []
             for idx, filepath in enumerate(self.video_paths):
-                self.progress.emit(f"Loading video {idx+1}/{len(self.video_paths)}: {filepath.split('/')[-1]}")
+                self.progress.emit(f"Loading video {idx+1}/{len(self.video_paths)}: {os.path.basename(filepath)}")
                 loader = VideoLoader(filepath)
                 frames = loader.load_all_frames(max_frames=self.max_frames_load)
                 loader.release()

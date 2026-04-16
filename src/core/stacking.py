@@ -22,6 +22,7 @@ class Stacker:
             reference_frame = frames[0]
             
         aligned_frames = []
+        ref_gray = reference_frame
         
         if len(reference_frame.shape) == 3:
             ref_gray = cv2.cvtColor(reference_frame, cv2.COLOR_BGR2GRAY)

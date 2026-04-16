@@ -375,6 +375,7 @@ class MainWindow(QMainWindow):
         # Gather post-processing settings
         layers = []
         auto_color = False
+        denoise = 0
         
         if self.auto_mode_btn.isChecked():
             # Automatic settings - handled by worker's smart optimizer
@@ -432,13 +433,7 @@ class MainWindow(QMainWindow):
         )
         
         if file_path:
-            # Convert BGR to RGB if needed for saving
-            if len(image_to_save.shape) == 3:
-                save_image = cv2.cvtColor(image_to_save, cv2.COLOR_BGR2RGB)
-            else:
-                save_image = image_to_save
-                
-            cv2.imwrite(file_path, save_image)
+            cv2.imwrite(file_path, image_to_save)
             self.status_label.setText(f"Image saved to {os.path.basename(file_path)}")
             QMessageBox.information(self, "Success", f"Image saved successfully to:\n{file_path}")
         
