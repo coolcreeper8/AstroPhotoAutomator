@@ -11,6 +11,7 @@ from PyQt6.QtGui import QImage, QPixmap
 from gui.workers import StackingWorker, PostProcessingWorker
 from core.processing import FrameAnalyzer
 from core.planet_configs import get_config, TARGET_LABEL_TO_KEY
+from core.derotation import needs_derotation
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -132,6 +133,14 @@ class MainWindow(QMainWindow):
         self.target_combo.currentTextChanged.connect(self.on_target_changed)
         target_layout.addWidget(self.target_combo)
         adv_layout.addLayout(target_layout)
+
+        # Derotation (automatic for fast-rotating planets like Jupiter)
+        self.derotate_check = QCheckBox("Enable Planetary Derotation")
+        self.derotate_check.setToolTip(
+            "Counter-rotate frames to compensate for planetary rotation during the capture session.\n"
+            "Auto-enabled for Jupiter (9.9 h period) and Saturn (10.7 h period)."
+        )
+        adv_layout.addWidget(self.derotate_check)
 
         # Pano Mode
         self.pano_mode_check = QCheckBox("Panorama Mode (Stitch videos)")
@@ -304,6 +313,7 @@ class MainWindow(QMainWindow):
         key = TARGET_LABEL_TO_KEY.get(label)
         if key is None:
             self.planet_config = None
+            self.derotate_check.setChecked(False)
             return
         config = get_config(key)
         self.planet_config = config
@@ -313,6 +323,8 @@ class MainWindow(QMainWindow):
         self.stack_percent.setValue(config["stack_percent"])
         align_map = {"translate": 0, "affine": 1, "optical_flow": 2}
         self.align_mode_combo.setCurrentIndex(align_map.get(config["align_mode"], 0))
+        # Auto-enable derotation only for targets with fast enough rotation to matter
+        self.derotate_check.setChecked(needs_derotation(key))
         self.status_label.setText(f"Preset for {label} applied to stacking settings.")
 
     def apply_planet_preset(self):
@@ -374,9 +386,12 @@ class MainWindow(QMainWindow):
         
         pano_mode = self.pano_mode_check.isChecked()
         
+        derotate = self.derotate_check.isChecked()
+        planet_name = TARGET_LABEL_TO_KEY.get(self.target_combo.currentText())
+
         self.stacking_worker = StackingWorker(
             self.video_paths, stack_val, stack_mode, max_load, align_mode, pano_mode,
-            planet_config=self.planet_config
+            planet_config=self.planet_config, derotate=derotate, planet_name=planet_name
         )
         self.stacking_worker.progress.connect(self.update_status)
         self.stacking_worker.finished.connect(self.stacking_finished)
