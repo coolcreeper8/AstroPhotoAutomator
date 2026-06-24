@@ -109,23 +109,26 @@ class ColorCorrector:
 
 class AutoEnhancer:
     @staticmethod
-    def create_limb_mask(image):
+    def create_limb_mask(image, erosion_iters=2):
         """
         Creates a mask of the planet limb (edge) to protect it from sharpening artifacts.
         Returns a float mask where 1.0 = protect (keep original), 0.0 = sharpen.
+
+        erosion_iters: how aggressively to pull the safe zone away from the edge.
+          Saturn rings need 3 (ring tips extend past disk);
+          Moon surface needs 1 (fills the frame, limb is at edge).
         """
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image
-            
-        # 1. Threshold to find planet
-        # Otsu's binarization usually works well for high contrast space objects
+
+        # Threshold to find planet (Otsu works well for high-contrast space objects)
         _, thresh = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-        
-        # 2. Erode to pull away from the edge
-        kernel = np.ones((5,5), np.uint8)
-        eroded = cv2.erode(thresh, kernel, iterations=2)
+
+        # Erode to pull the safe zone away from the limb
+        kernel = np.ones((5, 5), np.uint8)
+        eroded = cv2.erode(thresh, kernel, iterations=erosion_iters)
         
         # 3. Create the "ringing zone" mask
         # We want to sharpen the center but not the very edge
@@ -154,32 +157,43 @@ class AutoEnhancer:
         return mask
 
     @staticmethod
-    def optimize(image):
+    def optimize(image, planet_config=None):
         """
         Smart automatic processing that:
         1. Applies color correction
-        2. Tests multiple sharpening strengths with limb masking
+        2. Tests multiple sharpening strengths with planet-tuned limb masking
         3. Selects the best result based on sharpness vs noise/clipping trade-off
+
+        planet_config: dict from planet_configs.PLANET_CONFIGS (or None for generic defaults).
+          When provided, uses the planet's wavelet_layers as the base sharpening profile
+          and its limb_erosion_iters for the limb mask.
         """
         # 1. First, correct the color base
         corrected = ColorCorrector.align_channels(image)
         corrected = ColorCorrector.auto_balance(corrected)
-        
-        # Generate protection mask
-        # 1.0 = Protect (keep original), 0.0 = Sharpen
-        limb_mask = AutoEnhancer.create_limb_mask(corrected)
-        
+
+        # Generate protection mask with planet-specific erosion depth
+        erosion_iters = planet_config.get("limb_erosion_iters", 2) if planet_config else 2
+        limb_mask = AutoEnhancer.create_limb_mask(corrected, erosion_iters=erosion_iters)
+
         # 2. Define search space for sharpening
-        # Base layers emphasize mid-detail (layers 2-4) common in planets
-        base_layers = [
-            (1.0, 0.0), 
-            (2.0, 1.0), 
-            (3.0, 1.0), 
-            (4.0, 0.5), 
-            (5.0, 0.0), 
-            (6.0, 0.0)
-        ]
-        
+        # Use planet-specific wavelet profile if available; fall back to generic mid-detail layers
+        if planet_config and planet_config.get("wavelet_layers"):
+            # Normalise to weights of 1.0 per active layer — the strength multiplier scales them
+            raw = planet_config["wavelet_layers"]
+            max_w = max((w for _, w in raw), default=1.0) or 1.0
+            base_layers = [(sigma, w / max_w) for sigma, w in raw]
+        else:
+            base_layers = [
+                (1.0, 0.0),
+                (2.0, 1.0),
+                (3.0, 1.0),
+                (4.0, 0.5),
+                (5.0, 0.0),
+                (6.0, 0.0),
+            ]
+
+        # Scale the base layers over a range of strengths to find the optimal point
         strengths = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
         
         best_score = -1.0

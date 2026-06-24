@@ -7,46 +7,47 @@ class Stacker:
     def __init__(self):
         pass
 
-    def align_frames(self, frames, reference_frame=None, mode='translate'):
+    def align_frames(self, frames, reference_frame=None, mode='translate',
+                     of_params=None, ecc_criteria=None):
         """
         Aligns a list of frames to a reference frame.
         Modes:
         - 'translate': Simple shift (fast, handles tracking drift).
         - 'affine': shift + rotation (handles field rotation).
         - 'optical_flow': pixel-wise warping (handles atmospheric distortion/seeing).
+
+        of_params: Farneback optical flow keyword dict (overrides built-in defaults).
+        ecc_criteria: (max_iterations, epsilon) tuple for ECC affine mode.
         """
         if not frames:
             return []
-            
+
         if reference_frame is None:
             reference_frame = frames[0]
-            
+
         aligned_frames = []
         ref_gray = reference_frame
-        
+
         if len(reference_frame.shape) == 3:
             ref_gray = cv2.cvtColor(reference_frame, cv2.COLOR_BGR2GRAY)
-            
+
         # Sharpen reference frame for better alignment lock (Critical for AutoStakkert-like performance)
         # Unsharp Mask: Original = Original + Amount * (Original - Blurred)
         blur = cv2.GaussianBlur(ref_gray, (0, 0), 3.0)
         ref_gray = cv2.addWeighted(ref_gray, 2.0, blur, -1.0, 0)
-            
+
         for i, frame in enumerate(frames):
-            # If it's the reference frame itself (and first), just append (optional optimization)
-            # But usually we align everything to the *computed* reference stack
-            
             frame_gray = frame
             if len(frame.shape) == 3:
                 frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                
+
             aligned_frame = None
-            
+
             try:
                 if mode == 'optical_flow':
-                    aligned_frame = self._align_optical_flow(ref_gray, frame_gray, frame)
+                    aligned_frame = self._align_optical_flow(ref_gray, frame_gray, frame, of_params=of_params)
                 elif mode == 'affine':
-                    aligned_frame = self._align_affine(ref_gray, frame_gray, frame)
+                    aligned_frame = self._align_affine(ref_gray, frame_gray, frame, ecc_criteria=ecc_criteria)
                 else: # translate
                     aligned_frame = self._align_translation(ref_gray, frame_gray, frame)
             except Exception as e:
@@ -54,7 +55,7 @@ class Stacker:
                 aligned_frame = frame
 
             aligned_frames.append(aligned_frame)
-            
+
         return aligned_frames
 
     def _align_translation(self, ref_gray, frame_gray, frame_color):
@@ -67,13 +68,13 @@ class Stacker:
         
         return cv2.warpAffine(frame_color, M, (cols, rows))
 
-    def _align_affine(self, ref_gray, frame_gray, frame_color):
+    def _align_affine(self, ref_gray, frame_gray, frame_color, ecc_criteria=None):
         # Initialize Warp Matrix (2x3 for Affine)
         warp_matrix = np.eye(2, 3, dtype=np.float32)
-        
-        # Define termination criteria
-        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.001)
-        
+
+        max_iter, eps = ecc_criteria if ecc_criteria else (50, 0.001)
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, max_iter, eps)
+
         try:
             # Use ECC (Enhanced Correlation Coefficient) - robust and accurate
             # Note: Input images must be single channel
@@ -86,19 +87,21 @@ class Stacker:
             # Fallback to translation if affine fails
             return self._align_translation(ref_gray, frame_gray, frame_color)
 
-    def _align_optical_flow(self, ref_gray, frame_gray, frame_color):
+    def _align_optical_flow(self, ref_gray, frame_gray, frame_color, of_params=None):
         # 1. First do a rough translation alignment to reduce displacement
         rough_aligned = self._align_translation(ref_gray, frame_gray, frame_color)
         rough_gray = rough_aligned
         if len(rough_aligned.shape) == 3:
             rough_gray = cv2.cvtColor(rough_aligned, cv2.COLOR_BGR2GRAY)
-            
-        # 2. Calculate Optical Flow (Farneback)
-        # Parameters inspired by typical super-resolution/denoising usage
-        flow = cv2.calcOpticalFlowFarneback(ref_gray, rough_gray, None, 
-                                            pyr_scale=0.5, levels=3, winsize=15, 
-                                            iterations=3, poly_n=5, poly_sigma=1.2, 
-                                            flags=0)
+
+        # 2. Calculate Optical Flow (Farneback) with planet-tuned parameters
+        p = of_params or dict(pyr_scale=0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2)
+        flow = cv2.calcOpticalFlowFarneback(
+            ref_gray, rough_gray, None,
+            p['pyr_scale'], p['levels'], p['winsize'],
+            p['iterations'], p['poly_n'], p['poly_sigma'],
+            flags=0
+        )
                                             
         # 3. Apply Flow (Remap)
         h, w = ref_gray.shape
