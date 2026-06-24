@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QButtonGroup, QFrame, QComboBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
-from gui.workers import StackingWorker, PostProcessingWorker
+from gui.workers import StackingWorker, PostProcessingWorker, DualObjectWorker
 from core.processing import FrameAnalyzer
 from core.planet_configs import get_config, TARGET_LABEL_TO_KEY
 from core.derotation import needs_derotation
@@ -24,6 +24,7 @@ class MainWindow(QMainWindow):
         self.processed_image = None
         self.stacking_worker = None
         self.postproc_worker = None
+        self.dual_worker = None
         self.detected_object = None   # Set after stacking completes
         self.planet_config = None     # Set by target selector or auto-detect
 
@@ -225,7 +226,16 @@ class MainWindow(QMainWindow):
         self.apply_postproc_btn.setEnabled(False)
         self.apply_postproc_btn.setStyleSheet("background-color: #2196F3; color: white; padding: 10px; font-weight: bold;")
         postproc_layout.addWidget(self.apply_postproc_btn)
-        
+
+        self.dual_blend_btn = QPushButton("Dual-Object Blend (Moon + Planet)")
+        self.dual_blend_btn.setEnabled(False)
+        self.dual_blend_btn.setToolTip(
+            "Re-stack with planet-optimal settings, then composite the planet region\n"
+            "over the current Moon-optimised stack for the best of both worlds."
+        )
+        self.dual_blend_btn.clicked.connect(self.start_dual_object_blend)
+        postproc_layout.addWidget(self.dual_blend_btn)
+
         self.save_btn = QPushButton("Save Image")
         self.save_btn.clicked.connect(self.save_image)
         self.save_btn.setEnabled(False)
@@ -420,6 +430,7 @@ class MainWindow(QMainWindow):
 
         # Enable post-processing controls
         self.apply_postproc_btn.setEnabled(True)
+        self.dual_blend_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
         self.stack_btn.setEnabled(True)
         self.add_video_btn.setEnabled(True)
@@ -489,10 +500,54 @@ class MainWindow(QMainWindow):
         
         self.apply_postproc_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
-        
+
         # Switch to processed tab
         self.preview_tabs.setCurrentIndex(1)
-    
+
+    def start_dual_object_blend(self):
+        """Re-stack with planet-optimal settings and composite over the current Moon stack."""
+        if self.stacked_image is None or not self.video_paths:
+            QMessageBox.warning(self, "No Stack", "Stack frames first before running Dual-Object Blend.")
+            return
+
+        # Determine which planet to use for the re-stack
+        target_label = self.target_combo.currentText()
+        planet_key = TARGET_LABEL_TO_KEY.get(target_label)
+        if planet_key in (None, "Moon (Surface)", "Planet (Jupiter/Mars/Venus)", "Unknown Celestial Body"):
+            # For Moon (Surface) as the main target, default planet to Jupiter
+            planet_key = "Jupiter"
+
+        self.dual_blend_btn.setEnabled(False)
+        self.apply_postproc_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self.progress_bar.setRange(0, 0)
+
+        base_stack = self.processed_image if self.processed_image is not None else self.stacked_image
+
+        max_load = self.max_frames_spin.value() or None
+        self.dual_worker = DualObjectWorker(
+            self.video_paths, base_stack,
+            max_frames_load=max_load,
+            planet_name=planet_key,
+        )
+        self.dual_worker.progress.connect(self.update_status)
+        self.dual_worker.finished.connect(self.dual_blend_finished)
+        self.dual_worker.error.connect(self.processing_error)
+        self.dual_worker.start()
+
+    def dual_blend_finished(self, blended_image):
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.status_label.setText("Dual-Object Blend complete — planet and Moon composited.")
+
+        self.processed_image = blended_image
+        self.display_image(blended_image, self.processed_view)
+
+        self.dual_blend_btn.setEnabled(True)
+        self.apply_postproc_btn.setEnabled(True)
+        self.save_btn.setEnabled(True)
+        self.preview_tabs.setCurrentIndex(1)
+
     def save_image(self):
         # Determine which image to save
         if self.processed_image is not None:
@@ -529,6 +584,7 @@ class MainWindow(QMainWindow):
         self.clear_videos_btn.setEnabled(True)
         if self.stacked_image is not None:
             self.apply_postproc_btn.setEnabled(True)
+            self.dual_blend_btn.setEnabled(True)
             self.save_btn.setEnabled(True)
         
     def display_image(self, arr, label_widget):

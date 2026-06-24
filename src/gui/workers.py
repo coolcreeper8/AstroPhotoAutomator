@@ -5,6 +5,8 @@ from core.processing import FrameAnalyzer
 from core.stacking import Stacker
 from core.post_processing import WaveletEnhancer, ColorCorrector, AutoEnhancer
 from core.derotation import derotate_frames, needs_derotation
+from core.dual_object import composite
+from core.planet_configs import get_config
 import numpy as np
 import cv2
 
@@ -204,6 +206,84 @@ class PostProcessingWorker(QThread):
                     result = ColorCorrector.auto_balance(result)
                 
             self.finished.emit(result)
-            
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class DualObjectWorker(QThread):
+    """
+    Re-stacks the loaded video frames with planet-optimal settings, then composites
+    the planet region over the existing Moon-optimal stack.
+
+    This lets the Moon surface get the high-frame-count, aggressive multi-scale
+    sharpening it needs while the co-field planet gets fine-detail, optical-flow
+    stacking — both in the same final image.
+    """
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, video_paths, moon_stack, max_frames_load=None,
+                 planet_name="Jupiter", blend_radius=30):
+        super().__init__()
+        self.video_paths = video_paths if isinstance(video_paths, list) else [video_paths]
+        self.moon_stack = moon_stack
+        self.max_frames_load = max_frames_load
+        self.planet_name = planet_name
+        self.blend_radius = blend_radius
+
+    def run(self):
+        try:
+            # 1. Reload frames
+            self.progress.emit("Dual-blend: reloading frames for planet-optimised stack...")
+            all_frames = []
+            fps = 25.0
+            for idx, filepath in enumerate(self.video_paths):
+                loader = VideoLoader(filepath)
+                if idx == 0:
+                    fps = loader.get_fps() or 25.0
+                frames = loader.load_all_frames(max_frames=self.max_frames_load)
+                loader.release()
+                all_frames.extend(frames)
+
+            if not all_frames:
+                self.error.emit("Dual-blend: no frames could be reloaded.")
+                return
+
+            # 2. Stack with planet-optimal config
+            planet_cfg = get_config(self.planet_name)
+            planet_worker = StackingWorker(
+                self.video_paths,
+                stack_val=planet_cfg["stack_percent"],
+                stack_mode="percent",
+                max_frames_load=self.max_frames_load,
+                align_mode=planet_cfg["align_mode"],
+                planet_config=planet_cfg,
+            )
+
+            self.progress.emit(
+                f"Dual-blend: stacking {planet_cfg['stack_percent']}% of frames "
+                f"with {self.planet_name} settings ({planet_cfg['align_mode']})..."
+            )
+            planet_stack = planet_worker.process_single_stack(all_frames, fps=fps, prefix="Planet")
+            if planet_stack is None:
+                self.error.emit("Dual-blend: planet stack failed.")
+                return
+
+            # 3. Apply planet-specific wavelet sharpening to the planet stack
+            self.progress.emit("Dual-blend: sharpening planet stack...")
+            planet_stack = WaveletEnhancer.apply_wavelets(
+                planet_stack,
+                layers=planet_cfg["wavelet_layers"],
+                denoise_strength=planet_cfg["denoise"],
+            )
+
+            # 4. Composite: Moon stack (base) + planet stack (overlay on planet region)
+            self.progress.emit("Dual-blend: compositing Moon and planet stacks...")
+            result = composite(self.moon_stack, planet_stack, blend_radius=self.blend_radius)
+
+            self.finished.emit(result)
+
         except Exception as e:
             self.error.emit(str(e))
