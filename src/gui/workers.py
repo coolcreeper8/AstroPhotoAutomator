@@ -12,14 +12,16 @@ class StackingWorker(QThread):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
-    def __init__(self, video_paths, stack_val, stack_mode="percent", max_frames_load=None, align_mode="translate", pano_mode=False):
+    def __init__(self, video_paths, stack_val, stack_mode="percent", max_frames_load=None,
+                 align_mode="translate", pano_mode=False, planet_config=None):
         super().__init__()
         self.video_paths = video_paths if isinstance(video_paths, list) else [video_paths]
-        self.stack_val = stack_val 
+        self.stack_val = stack_val
         self.stack_mode = stack_mode
         self.max_frames_load = max_frames_load
         self.align_mode = align_mode
         self.pano_mode = pano_mode
+        self.planet_config = planet_config
         self.aborted = False
 
     def run(self):
@@ -135,8 +137,13 @@ class StackingWorker(QThread):
         reference_stack = stacker.stack_frames(reference_frames, method='mean')
         
         # 4. Align to Reference Stack
+        of_params    = self.planet_config.get("of_params")    if self.planet_config else None
+        ecc_criteria = self.planet_config.get("ecc_criteria") if self.planet_config else None
         self.progress.emit(f"{pfx}Aligning {len(best_frames)} frames to reference ({self.align_mode})...")
-        aligned_frames = stacker.align_frames(best_frames, reference_frame=reference_stack, mode=self.align_mode)
+        aligned_frames = stacker.align_frames(
+            best_frames, reference_frame=reference_stack, mode=self.align_mode,
+            of_params=of_params, ecc_criteria=ecc_criteria
+        )
         
         # 5. Final Stack
         self.progress.emit(f"{pfx}Creating final stack...")
@@ -150,21 +157,23 @@ class PostProcessingWorker(QThread):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
-    def __init__(self, stacked_image, wavelet_layers, auto_color, denoise=0, auto_mode=False):
+    def __init__(self, stacked_image, wavelet_layers, auto_color, denoise=0, auto_mode=False,
+                 planet_config=None):
         super().__init__()
         self.stacked_image = stacked_image
         self.wavelet_layers = wavelet_layers
         self.auto_color = auto_color
         self.denoise = denoise
         self.auto_mode = auto_mode
+        self.planet_config = planet_config
 
     def run(self):
         try:
             result = self.stacked_image.copy()
-            
+
             if self.auto_mode:
                 self.progress.emit("Running smart automatic optimization...")
-                result = AutoEnhancer.optimize(result)
+                result = AutoEnhancer.optimize(result, planet_config=self.planet_config)
             else:
                 if self.wavelet_layers:
                     self.progress.emit(f"Applying wavelet sharpening (Denoise: {self.denoise})...")

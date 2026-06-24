@@ -1,8 +1,8 @@
 import os
 import cv2
 import numpy as np
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QPushButton, QFileDialog, QSlider, 
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QPushButton, QFileDialog, QSlider,
                              QSpinBox, QCheckBox, QGroupBox, QProgressBar, QMessageBox,
                              QTabWidget, QListWidget, QListWidgetItem, QRadioButton,
                              QButtonGroup, QFrame, QComboBox)
@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 from gui.workers import StackingWorker, PostProcessingWorker
 from core.processing import FrameAnalyzer
+from core.planet_configs import get_config, TARGET_LABEL_TO_KEY
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -22,7 +23,9 @@ class MainWindow(QMainWindow):
         self.processed_image = None
         self.stacking_worker = None
         self.postproc_worker = None
-        
+        self.detected_object = None   # Set after stacking completes
+        self.planet_config = None     # Set by target selector or auto-detect
+
         self.init_ui()
         
     def init_ui(self):
@@ -118,6 +121,18 @@ class MainWindow(QMainWindow):
         align_layout.addWidget(self.align_mode_combo)
         adv_layout.addLayout(align_layout)
         
+        # Target object selector — drives recommended stacking % and alignment mode
+        target_layout = QHBoxLayout()
+        target_layout.addWidget(QLabel("Target Object:"))
+        self.target_combo = QComboBox()
+        self.target_combo.addItems(list(TARGET_LABEL_TO_KEY.keys()))
+        self.target_combo.setToolTip(
+            "Select your imaging target to auto-apply recommended stacking and post-processing settings."
+        )
+        self.target_combo.currentTextChanged.connect(self.on_target_changed)
+        target_layout.addWidget(self.target_combo)
+        adv_layout.addLayout(target_layout)
+
         # Pano Mode
         self.pano_mode_check = QCheckBox("Panorama Mode (Stitch videos)")
         self.pano_mode_check.setToolTip("Stack each video separately and stitch them into a panorama.")
@@ -190,6 +205,12 @@ class MainWindow(QMainWindow):
         
         postproc_layout.addWidget(self.manual_controls_widget)
         
+        self.load_preset_btn = QPushButton("Load Planet Preset")
+        self.load_preset_btn.setEnabled(False)
+        self.load_preset_btn.setToolTip("Populate wavelet sliders with recommended settings for the detected target.")
+        self.load_preset_btn.clicked.connect(self.apply_planet_preset)
+        postproc_layout.addWidget(self.load_preset_btn)
+
         self.apply_postproc_btn = QPushButton("Apply Post-Processing")
         self.apply_postproc_btn.clicked.connect(self.start_post_processing)
         self.apply_postproc_btn.setEnabled(False)
@@ -279,6 +300,34 @@ class MainWindow(QMainWindow):
             self.clear_videos_btn.setEnabled(True)
         self.status_label.setText("Ready to stack." if count > 0 else "Load video(s) to begin.")
     
+    def on_target_changed(self, label):
+        key = TARGET_LABEL_TO_KEY.get(label)
+        if key is None:
+            self.planet_config = None
+            return
+        config = get_config(key)
+        self.planet_config = config
+        # Apply recommended stacking settings immediately
+        if self.stack_mode_combo.currentIndex() != 0:
+            self.stack_mode_combo.setCurrentIndex(0)
+        self.stack_percent.setValue(config["stack_percent"])
+        align_map = {"translate": 0, "affine": 1, "optical_flow": 2}
+        self.align_mode_combo.setCurrentIndex(align_map.get(config["align_mode"], 0))
+        self.status_label.setText(f"Preset for {label} applied to stacking settings.")
+
+    def apply_planet_preset(self):
+        if self.planet_config is None:
+            return
+        self.manual_mode_btn.setChecked(True)
+        scales = [1, 2, 4, 8, 16, 32]
+        wavelet_dict = {float(sigma): w for sigma, w in self.planet_config["wavelet_layers"]}
+        for slider, scale in zip(self.layer_sliders, scales):
+            weight = wavelet_dict.get(float(scale), 0.0)
+            slider.setValue(int(weight * 10))
+        self.denoise_slider.setValue(self.planet_config["denoise"])
+        obj = self.detected_object or self.target_combo.currentText()
+        self.status_label.setText(f"Loaded {obj} wavelet preset — adjust if needed, then Apply.")
+
     def update_stack_slider_mode(self, index):
         if index == 0: # Percentage
             self.stack_percent.setRange(1, 100)
@@ -325,7 +374,10 @@ class MainWindow(QMainWindow):
         
         pano_mode = self.pano_mode_check.isChecked()
         
-        self.stacking_worker = StackingWorker(self.video_paths, stack_val, stack_mode, max_load, align_mode, pano_mode)
+        self.stacking_worker = StackingWorker(
+            self.video_paths, stack_val, stack_mode, max_load, align_mode, pano_mode,
+            planet_config=self.planet_config
+        )
         self.stacking_worker.progress.connect(self.update_status)
         self.stacking_worker.finished.connect(self.stacking_finished)
         self.stacking_worker.error.connect(self.processing_error)
@@ -334,20 +386,30 @@ class MainWindow(QMainWindow):
     def stacking_finished(self, stacked_image):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
-        
+
         recognized_obj = FrameAnalyzer.recognize_object(stacked_image)
-        self.status_label.setText(f"Stacking Complete! Recognized Object: {recognized_obj}. Ready for post-processing.")
-        
+        self.detected_object = recognized_obj
+
+        # If user chose Auto-Detect, resolve planet config from recognition result now
+        if self.target_combo.currentText() == "Auto-Detect":
+            self.planet_config = get_config(recognized_obj)
+
+        self.status_label.setText(
+            f"Stacking complete — detected: {recognized_obj}. Load preset or set sliders, then Apply."
+        )
+        self.load_preset_btn.setText(f"Load {recognized_obj} Preset")
+        self.load_preset_btn.setEnabled(True)
+
         self.stacked_image = stacked_image
         self.display_image(stacked_image, self.stacked_view)
-        
+
         # Enable post-processing controls
         self.apply_postproc_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
         self.stack_btn.setEnabled(True)
         self.add_video_btn.setEnabled(True)
         self.clear_videos_btn.setEnabled(True)
-        
+
         self.preview_tabs.setCurrentIndex(0)
         
     def on_stack_slider_change(self, v):
@@ -393,7 +455,10 @@ class MainWindow(QMainWindow):
             auto_color = self.auto_color_check.isChecked()
             denoise = self.denoise_slider.value()
         
-        self.postproc_worker = PostProcessingWorker(self.stacked_image, layers, auto_color, denoise, auto_mode=auto_mode)
+        self.postproc_worker = PostProcessingWorker(
+            self.stacked_image, layers, auto_color, denoise, auto_mode=auto_mode,
+            planet_config=self.planet_config
+        )
         self.postproc_worker.progress.connect(self.update_status)
         self.postproc_worker.finished.connect(self.postproc_finished)
         self.postproc_worker.error.connect(self.processing_error)
