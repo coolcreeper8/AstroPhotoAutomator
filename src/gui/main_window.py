@@ -7,11 +7,206 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
                              QRadioButton, QButtonGroup, QFrame, QComboBox)
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QFont
 from gui.workers import StackingWorker, PostProcessingWorker, DualObjectWorker
 from core.processing import FrameAnalyzer
 from core.planet_configs import get_config, TARGET_LABEL_TO_KEY
 from core.derotation import needs_derotation
+
+# ─── Dark Space Theme ────────────────────────────────────────────────────────
+_DARK_THEME = """
+QMainWindow, QDialog { background-color: #0d1117; }
+
+QWidget {
+    background-color: #0d1117;
+    color: #cdd9e5;
+    font-family: "Segoe UI", "Inter", Arial, sans-serif;
+    font-size: 13px;
+}
+
+QGroupBox {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding: 10px 6px 6px 6px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 6px;
+    color: #58a6ff;
+    font-weight: bold;
+    font-size: 11px;
+}
+
+/* ── Default buttons ── */
+QPushButton {
+    background-color: #21262d;
+    color: #cdd9e5;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 5px 12px;
+    min-height: 26px;
+}
+QPushButton:hover:enabled  { background-color: #30363d; border-color: #8b949e; color: #e6edf3; }
+QPushButton:pressed        { background-color: #0d1117; }
+QPushButton:disabled       { background-color: #161b22; color: #484f58; border-color: #21262d; }
+
+/* ── Stack Frames (green) ── */
+QPushButton#stackBtn {
+    background-color: #0f3d20;
+    border-color: #2ea043;
+    color: #aff5b4;
+    font-weight: bold;
+    font-size: 14px;
+    min-height: 38px;
+}
+QPushButton#stackBtn:hover:enabled  { background-color: #196127; border-color: #3fb950; }
+QPushButton#stackBtn:disabled       { background-color: #0d1117; border-color: #21262d; color: #484f58; }
+
+/* ── Apply Post-Processing (blue) ── */
+QPushButton#applyBtn {
+    background-color: #0c2d6b;
+    border-color: #388bfd;
+    color: #a5d3fb;
+    font-weight: bold;
+    font-size: 14px;
+    min-height: 38px;
+}
+QPushButton#applyBtn:hover:enabled  { background-color: #1158c7; border-color: #58a6ff; }
+QPushButton#applyBtn:disabled       { background-color: #0d1117; border-color: #21262d; color: #484f58; }
+
+/* ── Save Image (amber) ── */
+QPushButton#saveBtn {
+    background-color: #3d1f00;
+    border-color: #d29922;
+    color: #f0c27f;
+    font-weight: bold;
+    min-height: 32px;
+}
+QPushButton#saveBtn:hover:enabled   { background-color: #6b3a00; border-color: #e3b341; }
+QPushButton#saveBtn:disabled        { background-color: #0d1117; border-color: #21262d; color: #484f58; }
+
+/* ── Dual-Object Blend (purple) ── */
+QPushButton#dualBlendBtn {
+    background-color: #2e1065;
+    border-color: #8957e5;
+    color: #d2b0ff;
+    min-height: 32px;
+}
+QPushButton#dualBlendBtn:hover:enabled  { background-color: #3d1a8a; border-color: #a371f7; }
+QPushButton#dualBlendBtn:disabled       { background-color: #0d1117; border-color: #21262d; color: #484f58; }
+
+/* ── Load Preset (cyan) ── */
+QPushButton#presetBtn {
+    background-color: #0a2d3d;
+    border-color: #0c8599;
+    color: #96d5e5;
+    min-height: 28px;
+}
+QPushButton#presetBtn:hover:enabled { background-color: #0d4b61; border-color: #22d3ee; }
+QPushButton#presetBtn:disabled      { background-color: #0d1117; border-color: #21262d; color: #484f58; }
+
+/* ── Sliders ── */
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #30363d;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #388bfd;
+    border: 1px solid #1f6feb;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}
+QSlider::handle:horizontal:hover  { background: #58a6ff; }
+QSlider::sub-page:horizontal      { background: #1f6feb; border-radius: 2px; }
+
+/* ── Inputs ── */
+QComboBox, QSpinBox, QDoubleSpinBox {
+    background-color: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 3px 8px;
+    color: #cdd9e5;
+    min-height: 26px;
+}
+QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover { border-color: #8b949e; }
+QComboBox::drop-down { border: none; width: 20px; }
+QComboBox QAbstractItemView {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    selection-background-color: #30363d;
+    color: #cdd9e5;
+}
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+    background-color: #30363d;
+    border: none;
+    width: 16px;
+}
+
+/* ── Checkboxes & Radios ── */
+QCheckBox, QRadioButton { color: #cdd9e5; spacing: 6px; }
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #484f58;
+    background-color: #21262d;
+}
+QCheckBox::indicator  { border-radius: 4px; }
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: #1f6feb;
+    border-color: #388bfd;
+}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #8b949e; }
+
+/* ── Progress bar ── */
+QProgressBar {
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    background-color: #21262d;
+    text-align: center;
+    color: #8b949e;
+    min-height: 14px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #1f6feb, stop:1 #8957e5);
+    border-radius: 3px;
+}
+
+/* ── Tabs ── */
+QTabWidget::pane  { border: 1px solid #30363d; border-radius: 6px; background: #0d1117; }
+QTabBar::tab {
+    background-color: #161b22;
+    color: #8b949e;
+    border: 1px solid #30363d;
+    border-bottom: none;
+    padding: 6px 18px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected          { background-color: #0d1117; color: #58a6ff; border-bottom: 1px solid #0d1117; }
+QTabBar::tab:hover:!selected   { background-color: #21262d; color: #cdd9e5; }
+
+/* ── List ── */
+QListWidget {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #cdd9e5;
+}
+QListWidget::item:selected { background-color: #30363d; color: #58a6ff; }
+
+/* ── Labels ── */
+QLabel { color: #8b949e; background: transparent; }
+"""
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -29,7 +224,11 @@ class MainWindow(QMainWindow):
         self.planet_config = None     # Set by target selector or auto-detect
 
         self.init_ui()
-        
+        self.setStyleSheet(_DARK_THEME)
+        font = QFont("Segoe UI", 11)
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        self.setFont(font)
+
     def init_ui(self):
         container = QWidget()
         self.setCentralWidget(container)
@@ -38,7 +237,8 @@ class MainWindow(QMainWindow):
         # --- Left Control Panel ---
         control_panel = QWidget()
         control_layout = QVBoxLayout(control_panel)
-        control_panel.setFixedWidth(350)
+        control_panel.setFixedWidth(390)
+        control_layout.setSpacing(8)
         
         # File Loading
         file_group = QGroupBox("Video Files")
@@ -86,10 +286,9 @@ class MainWindow(QMainWindow):
         stacking_layout.addWidget(self.stack_percent_label)
         
         self.stack_btn = QPushButton("Stack Frames")
+        self.stack_btn.setObjectName("stackBtn")
         self.stack_btn.clicked.connect(self.start_stacking)
         self.stack_btn.setEnabled(False)
-        self.stack_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
-        self.stack_btn.stylesheet = "background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;"
         stacking_layout.addWidget(self.stack_btn)
 
         # --- Advanced Stacking Options ---
@@ -216,15 +415,16 @@ class MainWindow(QMainWindow):
         postproc_layout.addWidget(self.manual_controls_widget)
         
         self.load_preset_btn = QPushButton("Load Planet Preset")
+        self.load_preset_btn.setObjectName("presetBtn")
         self.load_preset_btn.setEnabled(False)
         self.load_preset_btn.setToolTip("Populate wavelet sliders with recommended settings for the detected target.")
         self.load_preset_btn.clicked.connect(self.apply_planet_preset)
         postproc_layout.addWidget(self.load_preset_btn)
 
         self.apply_postproc_btn = QPushButton("Apply Post-Processing")
+        self.apply_postproc_btn.setObjectName("applyBtn")
         self.apply_postproc_btn.clicked.connect(self.start_post_processing)
         self.apply_postproc_btn.setEnabled(False)
-        self.apply_postproc_btn.setStyleSheet("background-color: #2196F3; color: white; padding: 10px; font-weight: bold;")
         postproc_layout.addWidget(self.apply_postproc_btn)
 
         # Moon exposure boost for dual-object mode
@@ -244,7 +444,8 @@ class MainWindow(QMainWindow):
         boost_row.addWidget(QLabel("× (0=auto)"))
         postproc_layout.addLayout(boost_row)
 
-        self.dual_blend_btn = QPushButton("Dual-Object Blend (Moon + Planet)")
+        self.dual_blend_btn = QPushButton("Dual-Object Blend  Moon + Planet")
+        self.dual_blend_btn.setObjectName("dualBlendBtn")
         self.dual_blend_btn.setEnabled(False)
         self.dual_blend_btn.setToolTip(
             "Stack once with Moon-optimal settings (boosted exposure) and once with\n"
@@ -254,9 +455,9 @@ class MainWindow(QMainWindow):
         postproc_layout.addWidget(self.dual_blend_btn)
 
         self.save_btn = QPushButton("Save Image")
+        self.save_btn.setObjectName("saveBtn")
         self.save_btn.clicked.connect(self.save_image)
         self.save_btn.setEnabled(False)
-        self.save_btn.setStyleSheet("background-color: #FF9800; color: white; padding: 10px; font-weight: bold;")
         postproc_layout.addWidget(self.save_btn)
         
         control_layout.addWidget(postproc_group)
@@ -276,14 +477,20 @@ class MainWindow(QMainWindow):
         # Tab widget for stacked vs processed
         self.preview_tabs = QTabWidget()
         
-        self.stacked_view = QLabel()
+        _preview_style = (
+            "background-color: #010409;"
+            "border: 1px solid #30363d;"
+            "border-radius: 6px;"
+            "color: #484f58;"
+        )
+        self.stacked_view = QLabel("No image loaded")
         self.stacked_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stacked_view.setStyleSheet("background-color: #222; border: 1px solid #444;")
+        self.stacked_view.setStyleSheet(_preview_style)
         self.stacked_view.setMinimumSize(600, 600)
-        
-        self.processed_view = QLabel()
+
+        self.processed_view = QLabel("Apply post-processing to see result")
         self.processed_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.processed_view.setStyleSheet("background-color: #222; border: 1px solid #444;")
+        self.processed_view.setStyleSheet(_preview_style)
         self.processed_view.setMinimumSize(600, 600)
         
         self.preview_tabs.addTab(self.stacked_view, "Stacked Image")
