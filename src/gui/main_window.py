@@ -3,9 +3,9 @@ import cv2
 import numpy as np
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QFileDialog, QSlider,
-                             QSpinBox, QCheckBox, QGroupBox, QProgressBar, QMessageBox,
-                             QTabWidget, QListWidget, QListWidgetItem, QRadioButton,
-                             QButtonGroup, QFrame, QComboBox)
+                             QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox, QProgressBar,
+                             QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
+                             QRadioButton, QButtonGroup, QFrame, QComboBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 from gui.workers import StackingWorker, PostProcessingWorker, DualObjectWorker
@@ -227,11 +227,28 @@ class MainWindow(QMainWindow):
         self.apply_postproc_btn.setStyleSheet("background-color: #2196F3; color: white; padding: 10px; font-weight: bold;")
         postproc_layout.addWidget(self.apply_postproc_btn)
 
+        # Moon exposure boost for dual-object mode
+        boost_row = QHBoxLayout()
+        boost_row.addWidget(QLabel("Moon Boost:"))
+        self.moon_boost_spin = QDoubleSpinBox()
+        self.moon_boost_spin.setRange(0.0, 10.0)
+        self.moon_boost_spin.setSingleStep(0.5)
+        self.moon_boost_spin.setValue(0.0)
+        self.moon_boost_spin.setDecimals(1)
+        self.moon_boost_spin.setToolTip(
+            "Exposure boost applied to frames before Moon stacking.\n"
+            "0.0 = auto-detect from first frame (recommended).\n"
+            "Increase if the Moon is still invisible after auto-detect."
+        )
+        boost_row.addWidget(self.moon_boost_spin)
+        boost_row.addWidget(QLabel("× (0=auto)"))
+        postproc_layout.addLayout(boost_row)
+
         self.dual_blend_btn = QPushButton("Dual-Object Blend (Moon + Planet)")
         self.dual_blend_btn.setEnabled(False)
         self.dual_blend_btn.setToolTip(
-            "Re-stack with planet-optimal settings, then composite the planet region\n"
-            "over the current Moon-optimised stack for the best of both worlds."
+            "Stack once with Moon-optimal settings (boosted exposure) and once with\n"
+            "planet-optimal settings, then composite the planet region over the Moon."
         )
         self.dual_blend_btn.clicked.connect(self.start_dual_object_blend)
         postproc_layout.addWidget(self.dual_blend_btn)
@@ -505,30 +522,34 @@ class MainWindow(QMainWindow):
         self.preview_tabs.setCurrentIndex(1)
 
     def start_dual_object_blend(self):
-        """Re-stack with planet-optimal settings and composite over the current Moon stack."""
-        if self.stacked_image is None or not self.video_paths:
-            QMessageBox.warning(self, "No Stack", "Stack frames first before running Dual-Object Blend.")
+        """
+        Run independent Moon and planet stacks from the source video, then composite.
+        The Moon pass applies an exposure boost to recover the dim Moon from
+        planet-exposed frames (Jupiter/Saturn conjunctions).
+        """
+        if not self.video_paths:
+            QMessageBox.warning(self, "No Video", "Load video file(s) before running Dual-Object Blend.")
             return
 
-        # Determine which planet to use for the re-stack
+        # Determine which planet to composite
         target_label = self.target_combo.currentText()
         planet_key = TARGET_LABEL_TO_KEY.get(target_label)
         if planet_key in (None, "Moon (Surface)", "Planet (Jupiter/Mars/Venus)", "Unknown Celestial Body"):
-            # For Moon (Surface) as the main target, default planet to Jupiter
-            planet_key = "Jupiter"
+            planet_key = "Jupiter"  # Default to Jupiter for Moon/generic targets
 
         self.dual_blend_btn.setEnabled(False)
         self.apply_postproc_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self.progress_bar.setRange(0, 0)
 
-        base_stack = self.processed_image if self.processed_image is not None else self.stacked_image
-
         max_load = self.max_frames_spin.value() or None
+        boost = self.moon_boost_spin.value()  # 0.0 = auto-detect
+
         self.dual_worker = DualObjectWorker(
-            self.video_paths, base_stack,
+            self.video_paths,
             max_frames_load=max_load,
             planet_name=planet_key,
+            moon_boost_factor=boost,
         )
         self.dual_worker.progress.connect(self.update_status)
         self.dual_worker.finished.connect(self.dual_blend_finished)
