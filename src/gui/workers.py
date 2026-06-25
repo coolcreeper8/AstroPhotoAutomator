@@ -5,7 +5,7 @@ from core.processing import FrameAnalyzer
 from core.stacking import Stacker
 from core.post_processing import WaveletEnhancer, ColorCorrector, AutoEnhancer
 from core.derotation import derotate_frames, needs_derotation
-from core.dual_object import composite
+from core.dual_object import composite, apply_exposure_boost, auto_exposure_factor
 from core.planet_configs import get_config
 import numpy as np
 import cv2
@@ -213,30 +213,36 @@ class PostProcessingWorker(QThread):
 
 class DualObjectWorker(QThread):
     """
-    Re-stacks the loaded video frames with planet-optimal settings, then composites
-    the planet region over the existing Moon-optimal stack.
+    Produces both a Moon-optimised stack and a planet-optimised stack from the same
+    source video, then composites the planet region over the Moon background.
 
-    This lets the Moon surface get the high-frame-count, aggressive multi-scale
-    sharpening it needs while the co-field planet gets fine-detail, optical-flow
-    stacking — both in the same final image.
+    Key problem: planetary video is captured at short exposure tuned to the bright
+    planet.  The Moon — though physically far brighter — is underexposed in those
+    frames (sometimes nearly invisible for Jupiter/Saturn conjunctions).
+    This worker applies apply_exposure_boost() to all frames before the Moon stacking
+    pass so the Moon surface is recovered; the planet pass uses the raw frames.
+
+    moon_boost_factor: linear brightness multiplier for the Moon pass.
+        0.0  = auto-detect from the first frame via auto_exposure_factor().
+        >0.0 = use the given value directly (user override).
     """
     progress = pyqtSignal(str)
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
-    def __init__(self, video_paths, moon_stack, max_frames_load=None,
-                 planet_name="Jupiter", blend_radius=30):
+    def __init__(self, video_paths, max_frames_load=None,
+                 planet_name="Jupiter", moon_boost_factor=0.0, blend_radius=30):
         super().__init__()
         self.video_paths = video_paths if isinstance(video_paths, list) else [video_paths]
-        self.moon_stack = moon_stack
         self.max_frames_load = max_frames_load
         self.planet_name = planet_name
+        self.moon_boost_factor = moon_boost_factor
         self.blend_radius = blend_radius
 
     def run(self):
         try:
-            # 1. Reload frames
-            self.progress.emit("Dual-blend: reloading frames for planet-optimised stack...")
+            # 1. Load all frames once — both passes will operate on this list
+            self.progress.emit("Dual-blend: loading frames...")
             all_frames = []
             fps = 25.0
             for idx, filepath in enumerate(self.video_paths):
@@ -248,10 +254,49 @@ class DualObjectWorker(QThread):
                 all_frames.extend(frames)
 
             if not all_frames:
-                self.error.emit("Dual-blend: no frames could be reloaded.")
+                self.error.emit("Dual-blend: no frames could be loaded.")
                 return
 
-            # 2. Stack with planet-optimal config
+            # 2. Determine exposure boost factor
+            if self.moon_boost_factor > 0.0:
+                boost = self.moon_boost_factor
+                self.progress.emit(f"Dual-blend: Moon exposure boost = {boost:.1f}x (manual).")
+            else:
+                boost = auto_exposure_factor(all_frames[0])
+                self.progress.emit(
+                    f"Dual-blend: auto Moon exposure boost = {boost:.1f}x "
+                    f"(estimated from first frame)."
+                )
+
+            # 3. Moon pass — boost frames so the dim Moon surface becomes visible,
+            #    then stack with Moon-optimal config (50%, optical flow, wide window)
+            self.progress.emit(f"Dual-blend: brightening {len(all_frames)} frames for Moon stack...")
+            moon_frames = [apply_exposure_boost(f, factor=boost) for f in all_frames]
+
+            moon_cfg = get_config("Moon (Surface)")
+            moon_worker = StackingWorker(
+                self.video_paths,
+                stack_val=moon_cfg["stack_percent"],
+                stack_mode="percent",
+                max_frames_load=self.max_frames_load,
+                align_mode=moon_cfg["align_mode"],
+                planet_config=moon_cfg,
+            )
+            self.progress.emit(
+                f"Dual-blend: stacking Moon ({moon_cfg['stack_percent']}% frames, "
+                f"{moon_cfg['align_mode']})..."
+            )
+            moon_stack = moon_worker.process_single_stack(moon_frames, fps=fps, prefix="Moon")
+            if moon_stack is None:
+                self.error.emit("Dual-blend: Moon stack failed.")
+                return
+            moon_stack = WaveletEnhancer.apply_wavelets(
+                moon_stack,
+                layers=moon_cfg["wavelet_layers"],
+                denoise_strength=moon_cfg["denoise"],
+            )
+
+            # 4. Planet pass — original frames (correct planet exposure), planet-optimal config
             planet_cfg = get_config(self.planet_name)
             planet_worker = StackingWorker(
                 self.video_paths,
@@ -261,27 +306,23 @@ class DualObjectWorker(QThread):
                 align_mode=planet_cfg["align_mode"],
                 planet_config=planet_cfg,
             )
-
             self.progress.emit(
-                f"Dual-blend: stacking {planet_cfg['stack_percent']}% of frames "
-                f"with {self.planet_name} settings ({planet_cfg['align_mode']})..."
+                f"Dual-blend: stacking planet ({planet_cfg['stack_percent']}% frames, "
+                f"{planet_cfg['align_mode']})..."
             )
             planet_stack = planet_worker.process_single_stack(all_frames, fps=fps, prefix="Planet")
             if planet_stack is None:
                 self.error.emit("Dual-blend: planet stack failed.")
                 return
-
-            # 3. Apply planet-specific wavelet sharpening to the planet stack
-            self.progress.emit("Dual-blend: sharpening planet stack...")
             planet_stack = WaveletEnhancer.apply_wavelets(
                 planet_stack,
                 layers=planet_cfg["wavelet_layers"],
                 denoise_strength=planet_cfg["denoise"],
             )
 
-            # 4. Composite: Moon stack (base) + planet stack (overlay on planet region)
+            # 5. Composite: Moon stack as base, planet stack overlaid on the detected planet region
             self.progress.emit("Dual-blend: compositing Moon and planet stacks...")
-            result = composite(self.moon_stack, planet_stack, blend_radius=self.blend_radius)
+            result = composite(moon_stack, planet_stack, blend_radius=self.blend_radius)
 
             self.finished.emit(result)
 
