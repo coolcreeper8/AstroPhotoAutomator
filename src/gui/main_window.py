@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QPushButton, QFileDialog, QSlider,
+                             QGridLayout, QLabel, QPushButton, QFileDialog, QSlider,
                              QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox, QProgressBar,
                              QMessageBox, QTabWidget, QListWidget, QListWidgetItem,
                              QRadioButton, QButtonGroup, QFrame, QComboBox)
@@ -211,7 +211,7 @@ QLabel { color: #8b949e; background: transparent; }
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AstroPhotoAutomator")
+        self.setWindowTitle("AstroPhotoAutomator — Planetary Imaging Suite")
         self.resize(1200, 900)
         
         self.video_paths = []  # Support multiple videos
@@ -272,18 +272,22 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(file_group)
         
         # === STAGE 1: STACKING ===
-        stacking_group = QGroupBox("Stage 1: Stacking")
+        stacking_group = QGroupBox("① Stacking")
         stacking_layout = QVBoxLayout(stacking_group)
-        
-        stacking_layout.addWidget(QLabel("Percentage to Stack (%):"))
+        stacking_layout.setSpacing(6)
+
+        pct_row = QHBoxLayout()
+        pct_row.addWidget(QLabel("Stack:"))
         self.stack_percent = QSlider(Qt.Orientation.Horizontal)
         self.stack_percent.setRange(1, 100)
         self.stack_percent.setValue(20)
-        self.stack_percent_label = QLabel("20%")
         self.stack_percent.valueChanged.connect(self.on_stack_slider_change)
-        
-        stacking_layout.addWidget(self.stack_percent)
-        stacking_layout.addWidget(self.stack_percent_label)
+        self.stack_percent_label = QLabel("20%")
+        self.stack_percent_label.setFixedWidth(42)
+        self.stack_percent_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        pct_row.addWidget(self.stack_percent)
+        pct_row.addWidget(self.stack_percent_label)
+        stacking_layout.addLayout(pct_row)
         
         self.stack_btn = QPushButton("Stack Frames")
         self.stack_btn.setObjectName("stackBtn")
@@ -292,7 +296,7 @@ class MainWindow(QMainWindow):
         stacking_layout.addWidget(self.stack_btn)
 
         # --- Advanced Stacking Options ---
-        adv_group = QGroupBox("Advanced Settings")
+        adv_group = QGroupBox("Advanced")
         adv_layout = QVBoxLayout(adv_group)
 
         # Max Frames
@@ -352,7 +356,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(stacking_group)
         
         # === STAGE 2: POST-PROCESSING ===
-        postproc_group = QGroupBox("Stage 2: Post-Processing")
+        postproc_group = QGroupBox("② Post-Processing")
         postproc_layout = QVBoxLayout(postproc_group)
         
         # Mode Selection
@@ -377,25 +381,48 @@ class MainWindow(QMainWindow):
         manual_layout = QVBoxLayout(self.manual_controls_widget)
         manual_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Wavelet Options
-        manual_layout.addWidget(QLabel("Wavelet Sharpening (Dyadic):"))
+        # Wavelet Options — compact grid: scale label | slider | live value
+        wavelet_header = QLabel("Wavelet Sharpening")
+        wavelet_header.setStyleSheet("color: #58a6ff; font-weight: bold; font-size: 11px;")
+        manual_layout.addWidget(wavelet_header)
+
+        wavelet_grid = QGridLayout()
+        wavelet_grid.setSpacing(4)
+        wavelet_grid.setColumnStretch(1, 1)  # slider column stretches
+
         self.layer_sliders = []
-        # Dyadic Scales: 1, 2, 4, 8, 16, 32
+        self.layer_value_labels = []
         scales = [1, 2, 4, 8, 16, 32]
         for i, scale in enumerate(scales):
-            layer_container = QWidget()
-            layer_layout = QVBoxLayout(layer_container)
-            layer_layout.setContentsMargins(0, 0, 0, 0)
-            
-            layer_layout.addWidget(QLabel(f"  Layer {i+1} (Denoise/Detail {scale}px)"))
+            scale_lbl = QLabel(f"L{i+1} {scale}px")
+            scale_lbl.setFixedWidth(52)
+            scale_lbl.setStyleSheet("color: #8b949e; font-size: 11px;")
+
             slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(0, 50) # Divide by 10 for actual weight
+            slider.setRange(0, 50)
             slider.setValue(0)
+
+            val_lbl = QLabel("0.0")
+            val_lbl.setFixedWidth(28)
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            val_lbl.setStyleSheet("color: #cdd9e5; font-size: 11px; font-family: monospace;")
+
+            def _make_updater(v_lbl):
+                def _update(v):
+                    v_lbl.setText(f"{v / 10:.1f}")
+                return _update
+
+            slider.valueChanged.connect(_make_updater(val_lbl))
             slider.valueChanged.connect(self.on_postproc_param_changed)
-            layer_layout.addWidget(slider)
-            
-            manual_layout.addWidget(layer_container)
+
+            wavelet_grid.addWidget(scale_lbl, i, 0)
+            wavelet_grid.addWidget(slider,    i, 1)
+            wavelet_grid.addWidget(val_lbl,   i, 2)
+
             self.layer_sliders.append(slider)
+            self.layer_value_labels.append(val_lbl)
+
+        manual_layout.addLayout(wavelet_grid)
             
         # Denoise Option
         denoise_container = QHBoxLayout()
@@ -462,12 +489,17 @@ class MainWindow(QMainWindow):
         
         control_layout.addWidget(postproc_group)
         
-        # Progress Bar
+        # Progress + status
         self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
         control_layout.addWidget(self.progress_bar)
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("Ready — load video(s) to begin.")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet(
+            "color: #58a6ff; font-size: 11px; padding: 2px 0;"
+        )
         control_layout.addWidget(self.status_label)
-        
+
         control_layout.addStretch()
         
         # --- Right Preview ---
