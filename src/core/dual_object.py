@@ -6,32 +6,89 @@ stacking run must compromise: Moon-optimal settings (50% frame selection, aggres
 multi-scale sharpening) destroy fine planetary detail, while planet-optimal settings
 (10-20% frame selection, optical flow, heavy L1-L2 sharpening) leave the Moon soft.
 
-This module:
-  1. Detects and separates the two objects using binary masks.
-  2. Stacks each independently with its own optimal parameters (by re-using the
-     existing Stacker pipeline via callback).
-  3. Composites the results: Moon regions come from the Moon stack, planet regions
-     from the planet stack, with a soft Gaussian-blended boundary between the two.
+There is a second, harder problem: planetary video is captured at a short exposure
+optimised for the bright planet (Jupiter/Saturn are ~9 mag, Moon is ~-12 mag but
+vastly larger).  In those frames the Moon surface appears severely underexposed — in
+extreme cases almost invisible against sky background.  apply_exposure_boost() and
+auto_exposure_factor() solve this before the Moon stacking pass.
 
-Usage
------
-The composite() function is the public entry point.  It accepts the raw stacked frame
-(already processed by the caller's main pipeline) plus an independently produced
-planet-optimised stack.  The caller is responsible for running the two separate stacks
-and passing both images here.
+Pipeline
+--------
+  1. Boost exposure of all frames so the Moon is visible (Moon stacking pass only).
+  2. Stack Moon-boosted frames with Moon-optimal config (50%, optical flow).
+  3. Stack original frames with planet-optimal config (10-20%, optical flow/affine).
+  4. Detect and mask the planet in the planet stack.
+  5. Composite: Moon stack fills background, planet stack overlaid on planet region.
 
-blend_dual_object(moon_stack, planet_stack, planet_mask, blend_radius=30)
-    Low-level blend: combine two equal-size arrays using a soft mask around the planet.
-
-extract_object_mask(image, min_area_fraction=0.05)
-    Locate the planet (small, bright) in a field that also contains the Moon.
-
-composite(moon_stack, planet_stack, blend_radius=30)
-    High-level entry: auto-detect planet location, build mask, blend, return result.
+Public API
+----------
+apply_exposure_boost(frame, factor, gamma)  — brighten a single frame
+auto_exposure_factor(frame)                  — estimate needed boost from first frame
+extract_object_mask(image)                   — find planet blob in a wide field
+blend_dual_object(moon, planet, mask)        — soft-alpha composite
+composite(moon_stack, planet_stack)          — high-level entry point
 """
 
 import cv2
 import numpy as np
+
+
+def apply_exposure_boost(frame, factor=3.0, gamma=0.55):
+    """
+    Brightens an underexposed frame to recover Moon detail from planet-exposed video.
+
+    Applies a two-step stretch that mimics manual histogram stretching:
+      1. Linear multiplication by `factor` — lifts overall brightness.
+      2. Gamma compression (gamma < 1) — opens up shadows while compressing
+         already-bright planet pixels so they don't blow out completely.
+
+    Parameters
+    ----------
+    frame  : np.ndarray uint8  — input frame (BGR or grayscale)
+    factor : float             — linear pre-multiplier (default 3.0 = three stops)
+    gamma  : float             — power-law exponent < 1 (0.55 is a mild astro stretch)
+
+    Returns
+    -------
+    np.ndarray uint8 — brightened frame, same shape as input
+    """
+    f = frame.astype(np.float32) / 255.0
+    f = np.clip(f * factor, 0.0, 1.0)
+    f = np.power(f, gamma)
+    return (f * 255.0).astype(np.uint8)
+
+
+def auto_exposure_factor(frame):
+    """
+    Estimate the linear boost factor needed to make the underexposed Moon visible
+    in a frame captured at planet-optimised exposure.
+
+    Compares the 95th-percentile brightness (planet — very bright) to the
+    25th-percentile brightness among non-background pixels (underexposed Moon surface).
+    Returns 0.5× that ratio as a conservative boost: enough to lift the Moon into the
+    useful dynamic range without completely saturating the planet.
+
+    Returns a value clamped to [1.5, 8.0].  Falls back to 4.0 if the frame is
+    mostly empty or the Moon region is too dark to measure.
+    """
+    if len(frame.shape) == 3:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = frame.copy()
+
+    nonzero = gray[gray > 10].astype(np.float32)
+    if len(nonzero) < 200:
+        return 4.0
+
+    planet_level = float(np.percentile(nonzero, 95))   # very bright = planet
+    moon_level   = float(np.percentile(nonzero, 25))   # dimmer = Moon surface
+
+    if moon_level < 1.0:
+        return 4.0
+
+    # Target: lift Moon to ~50% of planet brightness
+    factor = (planet_level / moon_level) * 0.5
+    return float(np.clip(factor, 1.5, 8.0))
 
 
 def extract_object_mask(image, min_area_fraction=0.01, max_area_fraction=0.5):
